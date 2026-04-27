@@ -102,6 +102,12 @@ export default function EventDetail() {
         order_id: data.orderId,
         prefill: { name: data.userName, email: data.userEmail },
         theme: { color: '#7c3aed' },
+        method: {
+          upi: true,
+          card: true,
+          netbanking: true,
+          wallet: true,
+        },
         handler: async (response) => {
           try {
             await api.post('/bookings/verify-payment', {
