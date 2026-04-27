@@ -92,3 +92,55 @@ exports.verifyOTP = async (req, res) => {
         res.status(500).json({ message: 'Server Error' });
     }
 };
+
+exports.forgotPassword = async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email) return res.status(400).json({ message: 'Email is required' });
+
+        const user = await User.findOne({ email });
+        if (!user) {
+            // Don't reveal whether the email exists — always return success
+            return res.json({ message: 'If an account with that email exists, an OTP has been sent.', email });
+        }
+
+        // Remove any existing password-reset OTPs for this email
+        await OTP.findOneAndDelete({ email, action: 'password_reset' });
+
+        const otp = generateOTP();
+        await OTP.create({ email, otp, action: 'password_reset' });
+        await sendOTPEmail(email, otp, 'password_reset');
+
+        res.json({ message: 'If an account with that email exists, an OTP has been sent.', email });
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+};
+
+exports.resetPassword = async (req, res) => {
+    try {
+        const { email, otp, newPassword } = req.body;
+        if (!email || !otp || !newPassword) {
+            return res.status(400).json({ message: 'Email, OTP, and new password are required' });
+        }
+
+        if (newPassword.length < 6) {
+            return res.status(400).json({ message: 'Password must be at least 6 characters' });
+        }
+
+        const validOTP = await OTP.findOne({ email, otp, action: 'password_reset' });
+        if (!validOTP) {
+            return res.status(400).json({ message: 'Invalid or expired OTP' });
+        }
+
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+        await User.findOneAndUpdate({ email }, { password: hashedPassword });
+        await OTP.deleteOne({ _id: validOTP._id });
+
+        res.json({ message: 'Password reset successful. You can now log in with your new password.' });
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+};

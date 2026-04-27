@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../api/axios';
 
@@ -10,6 +10,8 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const resetSuccess = location.state?.resetSuccess;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -41,6 +43,7 @@ export default function Login() {
         <div className="auth-logo">Eventora</div>
         <h1 className="auth-title">Welcome back</h1>
         <p className="auth-subtitle">Sign in to your account to continue</p>
+        {resetSuccess && <div className="auth-success">Password reset successful! Sign in with your new password.</div>}
         {error && <div className="auth-error">{error}</div>}
         <form className="auth-form" onSubmit={handleSubmit}>
           <div className="form-group">
@@ -50,6 +53,9 @@ export default function Login() {
           <div className="form-group">
             <label className="form-label">Password</label>
             <input className="form-input" type="password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          </div>
+          <div className="forgot-link-wrap">
+            <Link to="/forgot-password" className="forgot-link">Forgot password?</Link>
           </div>
           <button className="btn btn-primary btn-full" type="submit" disabled={loading}>
             {loading ? 'Signing in...' : 'Sign In'}
