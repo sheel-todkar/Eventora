@@ -256,10 +256,8 @@ exports.getAdminStats = async (req, res) => {
         const pending = bookings.filter(b => b.status === 'pending');
         const cancelled = bookings.filter(b => b.status === 'cancelled');
 
-        // Revenue = sum of amount for confirmed + paid bookings
-        const revenue = bookings
-            .filter(b => b.status === 'confirmed' && (b.paymentStatus === 'paid' || b.amount === 0))
-            .reduce((sum, b) => sum + (b.amount || 0), 0);
+        // Revenue = sum of amount for all confirmed bookings
+        const revenue = confirmed.reduce((sum, b) => sum + (b.amount || 0), 0);
 
         res.json({
             totalEvents,
