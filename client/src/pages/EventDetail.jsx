@@ -102,11 +102,19 @@ export default function EventDetail() {
         order_id: data.orderId,
         prefill: { name: data.userName, email: data.userEmail },
         theme: { color: '#7c3aed' },
-        method: {
-          upi: true,
-          card: true,
-          netbanking: true,
-          wallet: true,
+        config: {
+          display: {
+            blocks: {
+              upi: {
+                name: 'Pay using UPI',
+                instruments: [
+                  { method: 'upi', flows: ['qr', 'intent', 'collect'] }
+                ]
+              }
+            },
+            sequence: ['block.upi', 'block.recommended'],
+            preferences: { show_default_blocks: true }
+          }
         },
         handler: async (response) => {
           try {
