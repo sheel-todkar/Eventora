@@ -3,29 +3,28 @@ import { Link } from 'react-router-dom';
 import api from '../../api/axios';
 
 export default function AdminDashboard() {
-  const [stats, setStats] = useState({ events: 0, bookings: 0, revenue: 0, confirmed: 0 });
+  const [stats, setStats] = useState({
+    totalEvents: 0,
+    totalBookings: 0,
+    totalBookedSeats: 0,
+    totalSeats: 0,
+    confirmed: 0,
+    pending: 0,
+    cancelled: 0,
+    revenue: 0
+  });
   const [recentBookings, setRecentBookings] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [eventsRes, bookingsRes] = await Promise.all([
-          api.get('/events'),
+        const [statsRes, bookingsRes] = await Promise.all([
+          api.get('/bookings/stats'),
           api.get('/bookings/my') // admin gets all bookings
         ]);
-        const events = eventsRes.data;
-        const bookings = bookingsRes.data;
-        const confirmed = bookings.filter(b => b.status === 'confirmed');
-        const revenue = confirmed.reduce((sum, b) => sum + (b.amount || 0), 0);
-
-        setStats({
-          events: events.length,
-          bookings: bookings.length,
-          revenue,
-          confirmed: confirmed.length
-        });
-        setRecentBookings(bookings.slice(0, 5));
+        setStats(statsRes.data);
+        setRecentBookings(bookingsRes.data.slice(0, 5));
       } catch (err) {
         console.error(err);
       } finally {
@@ -51,18 +50,28 @@ export default function AdminDashboard() {
       <div className="admin-stats">
         <div className="stat-card">
           <div className="stat-icon">📅</div>
-          <div className="stat-value gradient">{stats.events}</div>
+          <div className="stat-value gradient">{stats.totalEvents}</div>
           <div className="stat-label">Total Events</div>
         </div>
         <div className="stat-card">
+          <div className="stat-icon">💺</div>
+          <div className="stat-value gradient">{stats.totalBookedSeats}<span style={{ fontSize: 16, fontWeight: 400, color: 'var(--text-muted)' }}> / {stats.totalSeats}</span></div>
+          <div className="stat-label">Seats Booked</div>
+        </div>
+        <div className="stat-card">
           <div className="stat-icon">🎟️</div>
-          <div className="stat-value gradient">{stats.bookings}</div>
+          <div className="stat-value gradient">{stats.totalBookings}</div>
           <div className="stat-label">Total Bookings</div>
         </div>
         <div className="stat-card">
           <div className="stat-icon">✅</div>
           <div className="stat-value gradient">{stats.confirmed}</div>
           <div className="stat-label">Confirmed</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-icon">⏳</div>
+          <div className="stat-value gradient">{stats.pending}</div>
+          <div className="stat-label">Pending</div>
         </div>
         <div className="stat-card">
           <div className="stat-icon">💰</div>

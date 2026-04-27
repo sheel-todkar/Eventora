@@ -241,6 +241,41 @@ exports.confirmBooking = async (req, res) => {
     }
 };
 
+exports.getAdminStats = async (req, res) => {
+    try {
+        const [events, bookings] = await Promise.all([
+            Event.find(),
+            Booking.find().populate('eventId')
+        ]);
+
+        const totalEvents = events.length;
+        const totalBookedSeats = events.reduce((sum, e) => sum + (e.totalSeats - e.availableSeats), 0);
+        const totalSeats = events.reduce((sum, e) => sum + e.totalSeats, 0);
+
+        const confirmed = bookings.filter(b => b.status === 'confirmed');
+        const pending = bookings.filter(b => b.status === 'pending');
+        const cancelled = bookings.filter(b => b.status === 'cancelled');
+
+        // Revenue = sum of amount for confirmed + paid bookings
+        const revenue = bookings
+            .filter(b => b.status === 'confirmed' && (b.paymentStatus === 'paid' || b.amount === 0))
+            .reduce((sum, b) => sum + (b.amount || 0), 0);
+
+        res.json({
+            totalEvents,
+            totalBookedSeats,
+            totalSeats,
+            totalBookings: bookings.length,
+            confirmed: confirmed.length,
+            pending: pending.length,
+            cancelled: cancelled.length,
+            revenue
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+};
+
 exports.getMyBookings = async (req, res) => {
     try {
         const bookings = req.user.role === 'admin'
