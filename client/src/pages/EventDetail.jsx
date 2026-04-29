@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../api/axios';
@@ -32,59 +32,89 @@ export default function EventDetail() {
   const { id } = useParams();
   const { user } = useAuth();
   const navigate = useNavigate();
+  const mounted = useRef(true);
+
   const [event, setEvent] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   const [message, setMessage] = useState('');
-  // Booking status for the logged-in user
   const [bookingStatus, setBookingStatus] = useState({ registered: false, booking: null });
   const [statusLoading, setStatusLoading] = useState(false);
 
+  // prevent state updates after unmount
   useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  useEffect(() => {
+    setLoading(true);
+    setError('');
     api.get(`/events/${id}`)
-      .then(({ data }) => setEvent(data))
-      .catch(() => setMessage('Event not found'))
-      .finally(() => setLoading(false));
+      .then(({ data }) => {
+        if (!mounted.current) return;
+        setEvent(data);
+      })
+      .catch(() => {
+        if (!mounted.current) return;
+        setError('Event not found or failed to load.');
+      })
+      .finally(() => {
+        if (!mounted.current) return;
+        setLoading(false);
+      });
   }, [id]);
 
-  // Check if user already has a booking for this event
   useEffect(() => {
     if (!user) return;
     setStatusLoading(true);
     api.get(`/bookings/status/${id}`)
-      .then(({ data }) => setBookingStatus(data))
+      .then(({ data }) => {
+        if (!mounted.current) return;
+        setBookingStatus(data);
+      })
       .catch(() => {})
-      .finally(() => setStatusLoading(false));
+      .finally(() => {
+        if (!mounted.current) return;
+        setStatusLoading(false);
+      });
   }, [id, user]);
 
-  const formatDate = (d) => new Date(d).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-  const formatTime = (d) => new Date(d).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  const formatDate = (d) =>
+    new Date(d).toLocaleDateString('en-IN', {
+      weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+    });
+  const formatTime = (d) =>
+    new Date(d).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
 
-  // Step 1: Register for the event
   const handleRegister = async () => {
     if (!user) { navigate('/login'); return; }
     setActionLoading(true);
     setMessage('');
     try {
       const { data } = await api.post('/bookings/register', { eventId: id });
+      if (!mounted.current) return;
       setMessage(`✅ ${data.message}`);
       setBookingStatus({ registered: true, booking: data.booking });
       if (data.free) {
-        setEvent(prev => ({ ...prev, availableSeats: prev.availableSeats - 1 }));
+        setEvent(prev => ({ ...prev, availableSeats: (prev.availableSeats ?? 1) - 1 }));
       }
     } catch (err) {
-      setMessage(err.response?.data?.message || 'Registration failed');
+      if (!mounted.current) return;
+      setMessage(err.response?.data?.message || 'Registration failed. Please try again.');
     } finally {
-      setActionLoading(false);
+      if (mounted.current) setActionLoading(false);
     }
   };
 
-  // Step 2: Pay for existing pending booking
   const handlePay = async () => {
     setActionLoading(true);
     setMessage('');
     try {
-      const { data } = await api.post('/bookings/pay-now', { bookingId: bookingStatus.booking._id });
+      const { data } = await api.post('/bookings/pay-now', {
+        bookingId: bookingStatus.booking._id,
+      });
 
       const loaded = await loadRazorpayScript();
       if (!loaded) {
@@ -110,40 +140,76 @@ export default function EventDetail() {
               razorpay_signature: response.razorpay_signature,
               bookingId: data.bookingId,
             });
+            if (!mounted.current) return;
             setMessage('✅ Payment successful! Your booking is confirmed.');
             setBookingStatus(prev => ({
               ...prev,
-              booking: { ...prev.booking, status: 'confirmed', paymentStatus: 'paid' }
+              booking: { ...prev.booking, status: 'confirmed', paymentStatus: 'paid' },
             }));
-            setEvent(prev => ({ ...prev, availableSeats: prev.availableSeats - 1 }));
+            setEvent(prev => ({
+              ...prev,
+              availableSeats: (prev.availableSeats ?? 1) - 1,
+            }));
           } catch {
-            setMessage('Payment verification failed. Contact support.');
+            if (mounted.current) setMessage('Payment verification failed. Please contact support.');
+          } finally {
+            // always release loading after payment handler finishes
+            if (mounted.current) setActionLoading(false);
           }
-          setActionLoading(false);
         },
         modal: {
           ondismiss: () => {
-            setMessage('Payment was cancelled. You can pay anytime from My Bookings.');
-            setActionLoading(false);
-          }
-        }
+            if (mounted.current) {
+              setMessage('Payment cancelled. You can pay anytime from My Bookings.');
+              setActionLoading(false);
+            }
+          },
+        },
       };
 
       const rzp = new window.Razorpay(options);
       rzp.open();
     } catch (err) {
-      setMessage(err.response?.data?.message || 'Payment failed');
-      setActionLoading(false);
+      if (mounted.current) {
+        setMessage(err.response?.data?.message || 'Payment failed. Please try again.');
+        setActionLoading(false);
+      }
     }
   };
 
-  if (loading) return <div className="page container"><div className="loading-center"><div className="spinner" /><span>Loading event...</span></div></div>;
-  if (!event) return <div className="page container"><div className="empty-state"><div className="empty-state-icon">😕</div><h3>Event not found</h3></div></div>;
+  // ── Render guards ──────────────────────────────────────────
+  if (loading) return (
+    <div className="page container">
+      <div className="loading-center">
+        <div className="spinner" />
+        <span>Loading event...</span>
+      </div>
+    </div>
+  );
+
+  if (error || !event) return (
+    <div className="page container">
+      <div className="empty-state">
+        <div className="empty-state-icon">😕</div>
+        <h3>{error || 'Event not found'}</h3>
+        <button className="btn btn-primary" onClick={() => navigate('/')}>
+          Back to Events
+        </button>
+      </div>
+    </div>
+  );
+
+  // safe defaults so nothing crashes if fields are missing
+  const availableSeats = event.availableSeats ?? 0;
+  const totalSeats = event.totalSeats ?? 1; // avoid division by zero
+  const occupancy = Math.min((availableSeats / totalSeats) * 100, 100);
 
   const b = bookingStatus.booking;
-  const isConfirmedPaid = b && b.status === 'confirmed' && b.paymentStatus === 'paid';
-  const isConfirmedFree = b && b.status === 'confirmed' && event.ticketPrice === 0;
-  const isPendingUnpaid = b && b.status === 'pending' && b.paymentStatus === 'not_paid';
+  const isConfirmedPaid = b?.status === 'confirmed' && b?.paymentStatus === 'paid';
+  const isConfirmedFree = b?.status === 'confirmed' && event.ticketPrice === 0;
+  const isPendingUnpaid = b?.status === 'pending' && b?.paymentStatus === 'not_paid';
+
+  const isSuccess = message.startsWith('✅');
 
   return (
     <div className="page container">
@@ -154,46 +220,81 @@ export default function EventDetail() {
       )}
 
       <div className="event-detail-layout">
+        {/* Left: Event Info */}
         <div>
-          <div className="badge badge-free" style={{ marginBottom: 16 }}>{event.category}</div>
+          <div className="badge badge-free" style={{ marginBottom: 16 }}>
+            {event.category}
+          </div>
           <h1 className="event-detail-title">{event.title}</h1>
           <div className="event-detail-meta">
-            <div className="event-detail-meta-item"><CalendarIcon /> {formatDate(event.date)} at {formatTime(event.date)}</div>
-            <div className="event-detail-meta-item"><MapPinIcon /> {event.location}</div>
-            <div className="event-detail-meta-item"><UsersIcon /> {event.availableSeats} of {event.totalSeats} seats available</div>
-            <div className="event-detail-meta-item"><TagIcon /> {event.ticketPrice > 0 ? `₹${event.ticketPrice} per ticket` : 'Free entry'}</div>
+            <div className="event-detail-meta-item">
+              <CalendarIcon /> {formatDate(event.date)} at {formatTime(event.date)}
+            </div>
+            <div className="event-detail-meta-item">
+              <MapPinIcon /> {event.location}
+            </div>
+            <div className="event-detail-meta-item">
+              <UsersIcon /> {availableSeats} of {totalSeats} seats available
+            </div>
+            <div className="event-detail-meta-item">
+              <TagIcon /> {event.ticketPrice > 0 ? `₹${event.ticketPrice} per ticket` : 'Free entry'}
+            </div>
           </div>
-          <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: 12, color: 'var(--text-primary)' }}>About This Event</h3>
+          <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12, color: 'var(--text-primary)' }}>
+            About This Event
+          </h3>
           <p className="event-detail-description">{event.description}</p>
         </div>
 
-        {/* Booking Box */}
+        {/* Right: Booking Box */}
         <div className="booking-box">
-          <div className="booking-price">{event.ticketPrice > 0 ? `₹${event.ticketPrice}` : 'Free'}</div>
-          <div className="booking-price-sub">{event.ticketPrice > 0 ? 'per ticket (incl. taxes)' : 'No payment required'}</div>
+          <div className="booking-price">
+            {event.ticketPrice > 0 ? `₹${event.ticketPrice}` : 'Free'}
+          </div>
+          <div className="booking-price-sub">
+            {event.ticketPrice > 0 ? 'per ticket (incl. taxes)' : 'No payment required'}
+          </div>
 
+          {/* Seats progress bar */}
           <div className="booking-seats" style={{ marginBottom: 20 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 13 }}>
               <span>Available</span>
-              <span>{event.availableSeats} / {event.totalSeats}</span>
+              <span>{availableSeats} / {totalSeats}</span>
             </div>
             <div style={{ height: 6, background: 'var(--border)', borderRadius: 99, overflow: 'hidden' }}>
-              <div style={{ height: '100%', width: `${(event.availableSeats / event.totalSeats) * 100}%`, background: 'var(--gradient)', borderRadius: 99, transition: 'width 0.4s ease' }} />
+              <div style={{
+                height: '100%',
+                width: `${occupancy}%`,
+                background: 'var(--gradient)',
+                borderRadius: 99,
+                transition: 'width 0.4s ease',
+              }} />
             </div>
           </div>
 
+          {/* Message */}
           {message && (
-            <div style={{ padding: '12px 14px', borderRadius: 10, marginBottom: 16, fontSize: 13, background: message.includes('✅') ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)', color: message.includes('✅') ? 'var(--success)' : 'var(--danger)', border: `1px solid ${message.includes('✅') ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'}` }}>
+            <div style={{
+              padding: '12px 14px',
+              borderRadius: 10,
+              marginBottom: 16,
+              fontSize: 13,
+              background: isSuccess ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
+              color: isSuccess ? 'var(--success)' : 'var(--danger)',
+              border: `1px solid ${isSuccess ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'}`,
+            }}>
               {message}
             </div>
           )}
 
+          {/* Booking Action */}
           {statusLoading ? (
-            <div className="loading-center" style={{ minHeight: 60 }}><div className="spinner" /></div>
+            <div className="loading-center" style={{ minHeight: 60 }}>
+              <div className="spinner" />
+            </div>
           ) : isConfirmedPaid || isConfirmedFree ? (
-            /* Already registered & paid (or free) */
             <div>
-              <div style={{ padding: '16px', borderRadius: 12, background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.25)', textAlign: 'center', marginBottom: 12 }}>
+              <div style={{ padding: 16, borderRadius: 12, background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.25)', textAlign: 'center', marginBottom: 12 }}>
                 <div style={{ fontSize: 28, marginBottom: 8 }}>✅</div>
                 <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--success)' }}>You are registered!</div>
                 <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 4 }}>
@@ -203,19 +304,19 @@ export default function EventDetail() {
               <button className="btn btn-secondary btn-full" disabled>Already Booked</button>
             </div>
           ) : isPendingUnpaid ? (
-            /* Registered but not paid yet */
             <div>
-              <div style={{ padding: '16px', borderRadius: 12, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)', textAlign: 'center', marginBottom: 12 }}>
+              <div style={{ padding: 16, borderRadius: 12, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)', textAlign: 'center', marginBottom: 12 }}>
                 <div style={{ fontSize: 28, marginBottom: 8 }}>⏳</div>
-                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--warning)' }}>Registered — Payment Pending</div>
-                <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 4 }}>Complete payment to confirm your spot.</div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--warning)' }}>Payment Pending</div>
+                <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 4 }}>
+                  Complete payment to confirm your spot.
+                </div>
               </div>
               <button className="btn btn-primary btn-full" onClick={handlePay} disabled={actionLoading}>
                 {actionLoading ? 'Processing...' : `Pay ₹${event.ticketPrice} Now`}
               </button>
             </div>
-          ) : event.availableSeats > 0 ? (
-            /* Not registered yet */
+          ) : availableSeats > 0 ? (
             <button className="btn btn-primary btn-full" onClick={handleRegister} disabled={actionLoading}>
               {actionLoading ? 'Registering...' : event.ticketPrice > 0 ? 'Register for This Event' : 'Register — Free'}
             </button>
@@ -223,7 +324,11 @@ export default function EventDetail() {
             <button className="btn btn-secondary btn-full" disabled>Sold Out</button>
           )}
 
-          {!user && <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 10, textAlign: 'center' }}>You need to login to register</p>}
+          {!user && (
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 10, textAlign: 'center' }}>
+              You need to login to register
+            </p>
+          )}
         </div>
       </div>
     </div>
