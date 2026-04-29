@@ -3,11 +3,24 @@ const Event = require('../models/Event');
 exports.getEvents = async (req, res) => {
     try {
         const filters = {};
-        if (req.query.category) filters.category = req.query.category;
-        if (req.query.search) filters.title = { $regex: req.query.search, $options: 'i' };
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
+        const skip = (page - 1) * limit;
 
-        const events = await Event.find(filters).populate('createdBy', 'name email');
-        res.json(events);
+        if (req.query.category) filters.category = req.query.category;
+        if (req.query.search) filters.$text = { $search: req.query.search }; // uses text index, not $regex
+
+        const [events, total] = await Promise.all([
+            Event.find(filters)
+                .populate('createdBy', 'name email')
+                .sort({ date: 1 })
+                .skip(skip)
+                .limit(limit)
+                .lean(),           // .lean() returns plain JS objects, 30-50% faster
+            Event.countDocuments(filters)
+        ]);
+
+        res.json({ events, total, page, pages: Math.ceil(total / limit) });
     } catch (error) {
         res.status(500).json({ message: 'Server Error', error: error.message });
     }

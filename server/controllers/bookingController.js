@@ -243,32 +243,31 @@ exports.confirmBooking = async (req, res) => {
 
 exports.getAdminStats = async (req, res) => {
     try {
-        const [events, bookings] = await Promise.all([
-            Event.find(),
-            Booking.find().populate('eventId')
+        const [eventStats, bookingStats] = await Promise.all([
+            Event.aggregate([
+                { $group: {
+                    _id: null,
+                    totalEvents: { $sum: 1 },
+                    totalSeats: { $sum: '$totalSeats' },
+                    totalBookedSeats: { $sum: { $subtract: ['$totalSeats', '$availableSeats'] } }
+                }}
+            ]),
+            Booking.aggregate([
+                { $group: {
+                    _id: '$status',
+                    count: { $sum: 1 },
+                    revenue: { $sum: { $cond: [{ $eq: ['$status', 'confirmed'] }, '$amount', 0] } }
+                }}
+            ])
         ]);
 
-        const totalEvents = events.length;
-        const totalBookedSeats = events.reduce((sum, e) => sum + (e.totalSeats - e.availableSeats), 0);
-        const totalSeats = events.reduce((sum, e) => sum + e.totalSeats, 0);
+        const stats = bookingStats.reduce((acc, s) => {
+            acc[s._id] = s.count;
+            if (s._id === 'confirmed') acc.revenue = s.revenue;
+            return acc;
+        }, { revenue: 0 });
 
-        const confirmed = bookings.filter(b => b.status === 'confirmed');
-        const pending = bookings.filter(b => b.status === 'pending');
-        const cancelled = bookings.filter(b => b.status === 'cancelled');
-
-        // Revenue = sum of amount for all confirmed bookings
-        const revenue = confirmed.reduce((sum, b) => sum + (b.amount || 0), 0);
-
-        res.json({
-            totalEvents,
-            totalBookedSeats,
-            totalSeats,
-            totalBookings: bookings.length,
-            confirmed: confirmed.length,
-            pending: pending.length,
-            cancelled: cancelled.length,
-            revenue
-        });
+        res.json({ ...eventStats[0], ...stats });
     } catch (error) {
         res.status(500).json({ message: 'Server Error', error: error.message });
     }

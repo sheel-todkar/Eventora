@@ -34,13 +34,19 @@ app.use('/api/bookings', require('./routes/bookings'));
 // MongoDB Connection
 const connectDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGO_URI);
+    await mongoose.connect(process.env.MONGO_URI, {
+    maxPoolSize: 10,
+    serverSelectionTimeoutMS: 5000,
+    socketTimeoutMS: 45000,
+  });
     console.log('✅ MongoDB connected successfully');
   } catch (error) {
     console.error('❌ MongoDB connection error:', error.message);
-    process.exit(1);
+   
   }
-};
+    
+}
+
 
 // Connection events
 mongoose.connection.on('connected', () => {
