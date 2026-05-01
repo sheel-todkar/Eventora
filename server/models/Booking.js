@@ -1,14 +1,44 @@
 const mongoose = require('mongoose');
 
 const bookingSchema = new mongoose.Schema({
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    eventId: { type: mongoose.Schema.Types.ObjectId, ref: 'Event', required: true },
-    status: { type: String, enum: ['confirmed', 'cancelled', 'pending'], default: 'pending' },
-    paymentStatus: { type: String, enum: ['paid', 'not_paid'], default: 'not_paid' },
+    userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true
+    },
+    eventId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Event',
+        required: true
+    },
+    quantity: {
+        type: Number,
+        default:1
+        
+    },
+    status:{
+        type: String,
+        enum: ['pending', 'confirmed', 'cancelled'],
+        default: 'pending'
+    },
+    paymentStatus: { 
+        type: String, 
+        enum: ['pending', 'paid', 'failed'], 
+        default: 'pending' 
+    },
     amount: { type: Number, required: true },
-    razorpayOrderId: { type: String },
-    razorpayPaymentId: { type: String },
+
+    razorpayOrderId: String,
+    razorpayPaymentId: String,
+
     bookedAt: { type: Date, default: Date.now }
+
 }, { timestamps: true });
+bookingSchema.index({ userId: 1,createdAt: -1 });
+bookingSchema.index({ eventId: 1});
 
 module.exports = mongoose.model('Booking', bookingSchema);
+
+
+
+    
