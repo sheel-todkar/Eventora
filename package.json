@@ -20,8 +20,5 @@
   "devDependencies": {
     "concurrently": "^9.0.1"
   },
-  "dependencies": {
-    "node-cache": "^5.1.2",
-    "razorpay": "^2.9.6"
-  }
+  "dependencies": {}
 }

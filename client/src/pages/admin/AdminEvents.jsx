@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 
-const CATEGORIES = ['Technology', 'Community', 'Music', 'Business', 'Sports', 'Arts', 'Education'];
+const CATEGORIES = ['Technology', 'Community', 'Music', 'Business', 'Sports', 'Arts', 'Education', 'Other'];
 const INITIAL_FORM = {
   title: '', description: '', date: '', location: '',
   category: 'Technology', totalSeats: '', ticketPrice: '', image: ''

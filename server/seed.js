@@ -35,9 +35,9 @@ const seed = async () => {
             event = await Event.create({
                 title: testEventTitle,
                 description: 'Join the biggest React conference in India! Featuring world-class speakers, hands-on workshops, networking sessions, and the latest updates from the React ecosystem. A must-attend event for every frontend developer.',
-                date: new Date('2025-09-15T10:00:00.000Z'),
+                date: new Date('2027-09-15T10:00:00.000Z'),
                 location: 'Bangalore International Convention Centre, Bangalore',
-                category: 'Technology',
+                category: 'technology',
                 totalSeats: 200,
                 availableSeats: 200,
                 ticketPrice: 999,
@@ -56,9 +56,9 @@ const seed = async () => {
             freeEvent = await Event.create({
                 title: freeEventTitle,
                 description: 'A free community meetup for tech enthusiasts in Mumbai. Come and connect with fellow developers, listen to lightning talks, and enjoy food and networking. All skill levels welcome!',
-                date: new Date('2025-08-20T18:00:00.000Z'),
+                date: new Date('2027-08-20T18:00:00.000Z'),
                 location: 'WeWork Bandra, Mumbai',
-                category: 'Community',
+                category: 'community',
                 totalSeats: 100,
                 availableSeats: 100,
                 ticketPrice: 0,

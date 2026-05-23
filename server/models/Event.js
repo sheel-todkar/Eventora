@@ -31,7 +31,7 @@ const eventSchema = new mongoose.Schema({
     category: { 
         type: String, 
         required: true,
-        enum: ['music', 'sports', 'tech', 'food', 'art', 'education', 'other'],
+        enum: ['technology', 'community', 'music', 'business', 'sports', 'arts', 'education', 'other'],
         lowercase: true
     },
     totalSeats: { 

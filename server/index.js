@@ -1,7 +1,10 @@
 const express = require('express');
+const path = require('path');
 const cors = require('cors');
 const mongoose = require('mongoose');
 require('dotenv').config();
+const { globalLimiter } = require('./middleware/rateLimiter');
+const { connectRedis, disconnectRedis } = require('./utils/redis');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -23,6 +26,7 @@ app.use(cors({
   },
   credentials: true
 }));
+app.use(globalLimiter);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -42,7 +46,7 @@ const connectDB = async () => {
     console.log('✅ MongoDB connected successfully');
   } catch (error) {
     console.error('❌ MongoDB connection error:', error.message);
-   
+    process.exit(1);
   }
     
 }
@@ -71,20 +75,31 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-// Basic root route
-app.get('/', (req, res) => {
-  res.json({ message: 'Eventora API Server Running', status: 'healthy' });
-});
+// Serve React build in production
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(path.join(__dirname, 'public')));
+  app.get('*', (req, res, next) => {
+    // Skip API routes
+    if (req.path.startsWith('/api')) return next();
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  });
+} else {
+  app.get('/', (req, res) => {
+    res.json({ message: 'Eventora API Server Running', status: 'healthy' });
+  });
+}
 
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.log('🛑 Graceful shutdown (SIGINT)');
+  await disconnectRedis();
   await mongoose.connection.close();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
   console.log('🛑 Graceful shutdown (SIGTERM)');
+  await disconnectRedis();
   await mongoose.connection.close();
   process.exit(0);
 });
@@ -92,6 +107,7 @@ process.on('SIGTERM', async () => {
 // Start server only after DB connection
 const startServer = async () => {
   await connectDB();
+  await connectRedis();
   app.listen(PORT, () => {
     console.log(`🚀 Server is running on port ${PORT}`);
     console.log(`📊 Health check: http://localhost:${PORT}/api/health`);

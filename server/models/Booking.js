@@ -31,14 +31,10 @@ const bookingSchema = new mongoose.Schema({
     razorpayOrderId: String,
     razorpayPaymentId: String,
 
-    bookedAt: { type: Date, default: Date.now }
-
 }, { timestamps: true });
-bookingSchema.index({ userId: 1,createdAt: -1 });
-bookingSchema.index({ eventId: 1});
+bookingSchema.index({ userId: 1, createdAt: -1 });
+bookingSchema.index({ eventId: 1 });
 
 module.exports = mongoose.model('Booking', bookingSchema);
-
-
 
     

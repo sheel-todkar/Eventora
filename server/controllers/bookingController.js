@@ -1,7 +1,8 @@
 const Booking = require('../models/Booking');
 const Event = require('../models/Event');
-const OTP = require('../models/OTP');
-const { sendBookingEmail, sendOTPEmail } = require('../utils/email');
+const User = require('../models/User');
+const { sendBookingEmail } = require('../utils/email');
+const { getCache, setCache, deleteCache, deleteCachePattern } = require('../utils/redis');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
 
@@ -10,8 +11,18 @@ const razorpay = new Razorpay({
     key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
-// POST /api/bookings/create-order  (requires auth)
-// POST /api/bookings/register  — Step 1: Register for an event (creates pending booking, no payment)
+/**
+ * Invalidate all caches affected by seat changes or booking mutations.
+ */
+const invalidateBookingCaches = async (eventId) => {
+    await Promise.all([
+        deleteCache(`event:${eventId}`),
+        deleteCachePattern('events:*'),
+        deleteCache('admin:stats'),
+    ]);
+};
+
+// POST /api/bookings/register — Register for an event (free = confirm, paid = pending)
 exports.registerForEvent = async (req, res) => {
     try {
         const { eventId } = req.body;
@@ -28,8 +39,15 @@ exports.registerForEvent = async (req, res) => {
         });
         if (existing) return res.status(400).json({ message: 'You are already registered for this event', booking: existing });
 
-        // For free events, confirm immediately
+        // For free events — confirm immediately with atomic seat deduction
         if (event.ticketPrice === 0) {
+            const updated = await Event.findOneAndUpdate(
+                { _id: eventId, availableSeats: { $gt: 0 } },
+                { $inc: { availableSeats: -1 } },
+                { new: true }
+            );
+            if (!updated) return res.status(400).json({ message: 'No seats available' });
+
             const booking = await Booking.create({
                 userId: req.user.id,
                 eventId,
@@ -37,12 +55,24 @@ exports.registerForEvent = async (req, res) => {
                 paymentStatus: 'not_paid',
                 amount: 0
             });
-            event.availableSeats -= 1;
-            await event.save();
+
+            // Invalidate caches (seat count changed)
+            await invalidateBookingCaches(eventId);
+
+            // Send confirmation email for free events
+            try {
+                const registeredUser = await User.findById(req.user.id);
+                if (registeredUser) {
+                    await sendBookingEmail(registeredUser.email, registeredUser.name, event.title);
+                }
+            } catch (emailErr) {
+                console.error('Email send failed (free event):', emailErr.message);
+            }
+
             return res.status(201).json({ message: 'Registration confirmed! This is a free event.', booking, free: true });
         }
 
-        // For paid events, create a pending booking (no payment yet)
+        // For paid events — create a pending booking (no payment yet)
         const booking = await Booking.create({
             userId: req.user.id,
             eventId,
@@ -51,13 +81,16 @@ exports.registerForEvent = async (req, res) => {
             amount: event.ticketPrice
         });
 
+        // Invalidate stats cache (booking count changed)
+        await deleteCache('admin:stats');
+
         res.status(201).json({ message: 'Registered successfully! Please complete payment to confirm your spot.', booking });
     } catch (error) {
         res.status(500).json({ message: 'Registration failed', error: error.message });
     }
 };
 
-// POST /api/bookings/pay-now  — Step 2: Create Razorpay order for an existing pending booking
+// POST /api/bookings/pay-now — Create Razorpay order for a pending booking
 exports.payNow = async (req, res) => {
     try {
         const { bookingId } = req.body;
@@ -106,7 +139,7 @@ exports.payNow = async (req, res) => {
     }
 };
 
-// GET /api/bookings/status/:eventId  — Check if user has a booking for this event
+// GET /api/bookings/status/:eventId — Check if user has a booking for this event
 exports.getBookingStatus = async (req, res) => {
     try {
         const booking = await Booking.findOne({
@@ -121,7 +154,7 @@ exports.getBookingStatus = async (req, res) => {
     }
 };
 
-// POST /api/bookings/verify-payment  (requires auth)
+// POST /api/bookings/verify-payment — Verify Razorpay payment signature
 exports.verifyPayment = async (req, res) => {
     try {
         const { razorpay_order_id, razorpay_payment_id, razorpay_signature, bookingId } = req.body;
@@ -136,21 +169,36 @@ exports.verifyPayment = async (req, res) => {
             return res.status(400).json({ message: 'Payment verification failed: invalid signature' });
         }
 
-        // Update booking
+        // Atomic seat deduction FIRST — prevents overbooking under concurrency
         const booking = await Booking.findById(bookingId).populate('eventId').populate('userId');
         if (!booking) return res.status(404).json({ message: 'Booking not found' });
 
+        const seatUpdate = await Event.findOneAndUpdate(
+            { _id: booking.eventId._id, availableSeats: { $gt: 0 } },
+            { $inc: { availableSeats: -1 } },
+            { new: true }
+        );
+
+        if (!seatUpdate) {
+            // No seats available — mark payment as failed, don't confirm
+            booking.status = 'cancelled';
+            booking.paymentStatus = 'failed';
+            booking.razorpayPaymentId = razorpay_payment_id;
+            await booking.save();
+            return res.status(400).json({
+                message: 'No seats available. Payment received but booking could not be confirmed. A refund will be processed.',
+                booking
+            });
+        }
+
+        // Seats available — confirm the booking
         booking.status = 'confirmed';
         booking.paymentStatus = 'paid';
         booking.razorpayPaymentId = razorpay_payment_id;
         await booking.save();
 
-        // Deduct seat
-        const event = await Event.findById(booking.eventId._id);
-        if (event && event.availableSeats > 0) {
-            event.availableSeats -= 1;
-            await event.save();
-        }
+        // Invalidate caches
+        await invalidateBookingCaches(booking.eventId._id);
 
         // Send confirmation email
         await sendBookingEmail(booking.userId.email, booking.userId.name, booking.eventId.title);
@@ -161,55 +209,7 @@ exports.verifyPayment = async (req, res) => {
     }
 };
 
-const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
-
-exports.sendBookingOTP = async (req, res) => {
-    try {
-        const otp = generateOTP();
-        await OTP.findOneAndDelete({ email: req.user.email, action: 'event_booking' });
-        await OTP.create({ email: req.user.email, otp, action: 'event_booking' });
-        await sendOTPEmail(req.user.email, otp, 'event_booking');
-        res.json({ message: 'OTP sent successfully' });
-    } catch (error) {
-        res.status(500).json({ message: 'Error sending OTP', error: error.message });
-    }
-};
-
-exports.bookEvent = async (req, res) => {
-    try {
-        const { eventId, otp } = req.body;
-
-        // Verify OTP explicitly before proceeding
-        const validOTP = await OTP.findOne({ email: req.user.email, otp, action: 'event_booking' });
-        if (!validOTP) {
-            return res.status(400).json({ message: 'Invalid or expired OTP for booking' });
-        }
-
-        const event = await Event.findById(eventId);
-        if (!event) return res.status(404).json({ message: 'Event not found' });
-        if (event.availableSeats <= 0) return res.status(400).json({ message: 'No seats available' });
-
-        const existingBooking = await Booking.findOne({ userId: req.user.id, eventId });
-        if (existingBooking && existingBooking.status !== 'cancelled') {
-            return res.status(400).json({ message: 'Already booked or pending' });
-        }
-
-        const booking = await Booking.create({
-            userId: req.user.id,
-            eventId,
-            status: 'pending',
-            paymentStatus: 'not_paid',
-            amount: event.ticketPrice
-        });
-
-        await OTP.deleteOne({ _id: validOTP._id }); // cleanup
-
-        res.status(201).json({ message: 'Booking request submitted', booking });
-    } catch (error) {
-        res.status(500).json({ message: 'Server Error', error: error.message });
-    }
-};
-
+// PUT /api/bookings/:id/confirm — Admin confirms a pending booking
 exports.confirmBooking = async (req, res) => {
     try {
         const { paymentStatus } = req.body; // 'paid' or 'not_paid'
@@ -218,8 +218,13 @@ exports.confirmBooking = async (req, res) => {
 
         if (booking.status === 'confirmed') return res.status(400).json({ message: 'Booking is already confirmed' });
 
-        const event = await Event.findById(booking.eventId._id);
-        if (event.availableSeats <= 0) {
+        // Atomic seat deduction — prevents overbooking
+        const updated = await Event.findOneAndUpdate(
+            { _id: booking.eventId._id, availableSeats: { $gt: 0 } },
+            { $inc: { availableSeats: -1 } },
+            { new: true }
+        );
+        if (!updated) {
             return res.status(400).json({ message: 'No seats available to confirm this booking' });
         }
 
@@ -229,8 +234,8 @@ exports.confirmBooking = async (req, res) => {
         }
         await booking.save();
 
-        event.availableSeats -= 1;
-        await event.save();
+        // Invalidate caches
+        await invalidateBookingCaches(booking.eventId._id);
 
         // Send email on admin confirmation
         await sendBookingEmail(booking.userId.email, booking.userId.name, booking.eventId.title);
@@ -241,8 +246,14 @@ exports.confirmBooking = async (req, res) => {
     }
 };
 
+// GET /api/bookings/stats — Admin-only aggregate stats
 exports.getAdminStats = async (req, res) => {
     try {
+        // Check cache
+        const cacheKey = 'admin:stats';
+        const cached = await getCache(cacheKey);
+        if (cached) return res.json(cached);
+
         const [eventStats, bookingStats] = await Promise.all([
             Event.aggregate([
                 { $group: {
@@ -263,16 +274,20 @@ exports.getAdminStats = async (req, res) => {
 
         const stats = bookingStats.reduce((acc, s) => {
             acc[s._id] = s.count;
+            acc.totalBookings = (acc.totalBookings || 0) + s.count;
             if (s._id === 'confirmed') acc.revenue = s.revenue;
             return acc;
-        }, { revenue: 0 });
+        }, { revenue: 0, totalBookings: 0 });
 
-        res.json({ ...eventStats[0], ...stats });
+        const result = { ...eventStats[0], ...stats };
+        await setCache(cacheKey, result, 30); // cache for 30 seconds
+        res.json(result);
     } catch (error) {
         res.status(500).json({ message: 'Server Error', error: error.message });
     }
 };
 
+// GET /api/bookings/my — Get bookings (admin gets all, user gets own)
 exports.getMyBookings = async (req, res) => {
     try {
         const bookings = req.user.role === 'admin'
@@ -284,6 +299,7 @@ exports.getMyBookings = async (req, res) => {
     }
 };
 
+// DELETE /api/bookings/:id — Cancel a booking
 exports.cancelBooking = async (req, res) => {
     try {
         const booking = await Booking.findById(req.params.id);
@@ -295,18 +311,21 @@ exports.cancelBooking = async (req, res) => {
         if (booking.paymentStatus === 'paid') return res.status(400).json({ message: 'Cannot cancel a paid booking. Please process a refund first.' });
 
         const wasConfirmed = booking.status === 'confirmed';
+        const eventId = booking.eventId;
 
         booking.status = 'cancelled';
         await booking.save();
 
-        // Only restore the seat if it was actually confirmed and deducted
+        // Atomic seat restore — only if booking was confirmed (seat was deducted)
         if (wasConfirmed) {
-            const event = await Event.findById(booking.eventId);
-            if (event) {
-                event.availableSeats += 1;
-                await event.save();
-            }
+            await Event.findOneAndUpdate(
+                { _id: eventId },
+                { $inc: { availableSeats: 1 } }
+            );
         }
+
+        // Invalidate caches
+        await invalidateBookingCaches(eventId);
 
         res.json({ message: 'Booking cancelled successfully' });
     } catch (error) {

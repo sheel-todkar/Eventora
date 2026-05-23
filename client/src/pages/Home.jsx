@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../api/axios';
 
-const CATEGORIES = ['All', 'Technology', 'Community', 'Music', 'Business', 'Sports', 'Arts', 'Education'];
+const CATEGORIES = ['All', 'Technology', 'Community', 'Music', 'Business', 'Sports', 'Arts', 'Education', 'Other'];
 
 function CalendarIcon() {
   return (
