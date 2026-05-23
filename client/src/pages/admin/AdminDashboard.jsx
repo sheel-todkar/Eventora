@@ -21,10 +21,10 @@ export default function AdminDashboard() {
       try {
         const [statsRes, bookingsRes] = await Promise.all([
           api.get('/bookings/stats'),
-          api.get('/bookings/my') // admin gets all bookings
+          api.get('/bookings/my', { params: { page: 1, limit: 5 } })
         ]);
         setStats(statsRes.data);
-        setRecentBookings(bookingsRes.data.slice(0, 5));
+        setRecentBookings(bookingsRes.data.bookings);
       } catch (err) {
         console.error(err);
       } finally {

@@ -69,7 +69,8 @@ if [ ! -f "server/.env" ]; then
     echo "   (Press Enter to use defaults shown in brackets)"
     echo ""
 
-    read -p "MongoDB URI: " MONGO_URI
+    read -p "MongoDB Atlas URI (mongodb+srv://...): " MONGO_URI
+    read -p "Frontend URL for CORS [http://EC2-IP]: " CLIENT_URL
     read -p "JWT Secret [eventora_jwt_secret_2026]: " JWT_SECRET
     JWT_SECRET=${JWT_SECRET:-eventora_jwt_secret_2026}
     read -p "Email (Gmail): " EMAIL_USER
@@ -89,6 +90,7 @@ RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID}
 RAZORPAY_KEY_SECRET=${RAZORPAY_KEY_SECRET}
 REDIS_URL=redis://redis:6379
 NODE_ENV=production
+CLIENT_URL=${CLIENT_URL}
 EOF
 
     echo "✅ server/.env created"

@@ -287,13 +287,42 @@ exports.getAdminStats = async (req, res) => {
     }
 };
 
-// GET /api/bookings/my — Get bookings (admin gets all, user gets own)
+// GET /api/bookings/my — Paginated bookings (admin: all, user: own)
 exports.getMyBookings = async (req, res) => {
     try {
-        const bookings = req.user.role === 'admin'
-            ? await Booking.find().populate('eventId').populate('userId', 'name email').sort({ createdAt: -1 })
-            : await Booking.find({ userId: req.user.id }).populate('eventId').sort({ createdAt: -1 });
-        res.json(bookings);
+        const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+        const skip = (page - 1) * limit;
+
+        const filter = req.user.role === 'admin' ? {} : { userId: req.user.id };
+        const status = req.query.status;
+        if (req.user.role === 'admin' && status && status !== 'all') {
+            filter.status = status;
+        }
+
+        const query = Booking.find(filter)
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit);
+
+        if (req.user.role === 'admin') {
+            query.populate('eventId').populate('userId', 'name email');
+        } else {
+            query.populate('eventId');
+        }
+
+        const [bookings, total] = await Promise.all([
+            query.lean(),
+            Booking.countDocuments(filter),
+        ]);
+
+        res.json({
+            bookings,
+            total,
+            page,
+            pages: Math.ceil(total / limit) || 1,
+            limit,
+        });
     } catch (error) {
         res.status(500).json({ message: 'Server Error', error: error.message });
     }

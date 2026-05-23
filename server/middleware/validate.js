@@ -1,4 +1,4 @@
-const { body, param, validationResult } = require('express-validator');
+const { body, param, query, validationResult } = require('express-validator');
 
 // Shared handler — returns first validation error
 const validate = (req, res, next) => {
@@ -81,9 +81,25 @@ const verifyPaymentRules = [
     body('bookingId').isMongoId().withMessage('Invalid booking ID'),
 ];
 
+const mongoIdParam = (paramName = 'id') => [
+    param(paramName).isMongoId().withMessage(`Invalid ${paramName}`),
+];
+
+const paginationRules = [
+    query('page').optional().isInt({ min: 1 }).withMessage('Page must be at least 1'),
+    query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be 1–100'),
+    query('status').optional().isIn(['all', 'pending', 'confirmed', 'cancelled']).withMessage('Invalid status filter'),
+];
+
+const confirmBookingRules = [
+    ...mongoIdParam('id'),
+    body('paymentStatus').optional().isIn(['paid', 'not_paid', 'pending', 'failed']).withMessage('Invalid payment status'),
+];
+
 module.exports = {
     validate,
     registerRules, loginRules, verifyOTPRules, forgotPasswordRules, resetPasswordRules,
     createEventRules, updateEventRules,
     registerBookingRules, payNowRules, verifyPaymentRules,
+    mongoIdParam, paginationRules, confirmBookingRules,
 };

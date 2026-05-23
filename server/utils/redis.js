@@ -1,41 +1,82 @@
 const { createClient } = require('redis');
 
 let client = null;
-let isConnected = false;
+
+const isCacheReady = () => Boolean(client?.isReady);
+
+/**
+ * Tear down the Redis client so failed connections do not keep retrying in the background.
+ */
+const teardownClient = async () => {
+    const current = client;
+    client = null;
+    if (!current) return;
+
+    current.removeAllListeners();
+    try {
+        if (current.isOpen) {
+            await current.disconnect();
+        }
+    } catch {
+        // ignore shutdown errors
+    }
+};
+
+const logCacheDisabled = (() => {
+    let logged = false;
+    return () => {
+        if (logged) return;
+        logged = true;
+        console.log('⚠️ Redis unavailable — running without cache');
+    };
+})();
 
 /**
  * Connect to Redis. Called once on server startup.
- * If Redis is unavailable, the app continues without caching.
+ * If REDIS_URL is not set or Redis is unavailable, the app runs without caching.
  */
 const connectRedis = async () => {
-    const url = process.env.REDIS_URL || 'redis://localhost:6379';
+    const url = process.env.REDIS_URL?.trim();
+
+    if (!url) {
+        console.log('ℹ️  REDIS_URL not set — running without cache');
+        return;
+    }
 
     try {
-        client = createClient({ url });
-
-        client.on('error', (err) => {
-            console.error('❌ Redis error:', err.message);
-            isConnected = false;
+        client = createClient({
+            url,
+            socket: {
+                connectTimeout: 2000,
+                reconnectStrategy: (retries) => {
+                    if (retries > 1) return false;
+                    return 200;
+                },
+            },
         });
 
-        client.on('connect', () => {
-            console.log('📡 Redis connected');
-            isConnected = true;
-        });
+        // Required so connection errors do not become unhandled rejections.
+        client.on('error', () => {});
 
-        client.on('reconnecting', () => {
-            console.log('🔄 Redis reconnecting...');
-        });
+        const connectTimeoutMs = 6000;
+        await Promise.race([
+            client.connect(),
+            new Promise((_, reject) => {
+                setTimeout(
+                    () => reject(new Error('Redis connect timeout')),
+                    connectTimeoutMs
+                );
+            }),
+        ]);
 
-        client.on('end', () => {
-            console.log('🔌 Redis disconnected');
-            isConnected = false;
-        });
+        if (!client.isReady) {
+            throw new Error('Redis connected but not ready');
+        }
 
-        await client.connect();
-    } catch (error) {
-        console.error('⚠️ Redis connection failed — running without cache:', error.message);
-        isConnected = false;
+        console.log('📡 Redis connected');
+    } catch {
+        await teardownClient();
+        logCacheDisabled();
     }
 };
 
@@ -43,12 +84,11 @@ const connectRedis = async () => {
  * Get a cached value. Returns parsed JSON or null on miss/error.
  */
 const getCache = async (key) => {
-    if (!isConnected || !client) return null;
+    if (!isCacheReady()) return null;
     try {
         const data = await client.get(key);
         return data ? JSON.parse(data) : null;
-    } catch (error) {
-        console.error('Redis GET error:', error.message);
+    } catch {
         return null;
     }
 };
@@ -57,11 +97,11 @@ const getCache = async (key) => {
  * Set a cache value with TTL in seconds.
  */
 const setCache = async (key, data, ttlSeconds = 60) => {
-    if (!isConnected || !client) return;
+    if (!isCacheReady()) return;
     try {
         await client.set(key, JSON.stringify(data), { EX: ttlSeconds });
-    } catch (error) {
-        console.error('Redis SET error:', error.message);
+    } catch {
+        // ignore — app continues without cache
     }
 };
 
@@ -69,31 +109,33 @@ const setCache = async (key, data, ttlSeconds = 60) => {
  * Delete a specific cache key.
  */
 const deleteCache = async (key) => {
-    if (!isConnected || !client) return;
+    if (!isCacheReady()) return;
     try {
         await client.del(key);
-    } catch (error) {
-        console.error('Redis DEL error:', error.message);
+    } catch {
+        // ignore
     }
 };
 
 /**
  * Delete all keys matching a glob pattern (e.g., "events:*").
- * Uses SCAN to avoid blocking Redis on large keyspaces.
  */
 const deleteCachePattern = async (pattern) => {
-    if (!isConnected || !client) return;
+    if (!isCacheReady()) return;
     try {
-        let cursor = 0;
-        do {
-            const result = await client.scan(cursor, { MATCH: pattern, COUNT: 100 });
-            cursor = result.cursor;
-            if (result.keys.length > 0) {
-                await client.del(result.keys);
+        const batch = [];
+        for await (const key of client.scanIterator({ MATCH: pattern, COUNT: 100 })) {
+            batch.push(key);
+            if (batch.length >= 100) {
+                await client.del(batch);
+                batch.length = 0;
             }
-        } while (cursor !== 0);
-    } catch (error) {
-        console.error('Redis pattern DEL error:', error.message);
+        }
+        if (batch.length > 0) {
+            await client.del(batch);
+        }
+    } catch {
+        // ignore
     }
 };
 
@@ -101,11 +143,22 @@ const deleteCachePattern = async (pattern) => {
  * Disconnect Redis gracefully. Called on server shutdown.
  */
 const disconnectRedis = async () => {
-    if (client) {
+    const current = client;
+    if (!current) return;
+
+    client = null;
+    current.removeAllListeners();
+    try {
+        if (current.isOpen) {
+            await current.quit();
+        }
+    } catch {
         try {
-            await client.quit();
-        } catch (error) {
-            console.error('Redis disconnect error:', error.message);
+            if (current.isOpen) {
+                await current.disconnect();
+            }
+        } catch {
+            // ignore
         }
     }
 };

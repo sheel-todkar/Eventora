@@ -32,8 +32,11 @@ const bookingSchema = new mongoose.Schema({
     razorpayPaymentId: String,
 
 }, { timestamps: true });
+
+bookingSchema.index({ userId: 1, eventId: 1 });
 bookingSchema.index({ userId: 1, createdAt: -1 });
 bookingSchema.index({ eventId: 1 });
+bookingSchema.index({ status: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Booking', bookingSchema);
 
