@@ -44,7 +44,7 @@ exports.registerForEvent = async (req, res) => {
             const updated = await Event.findOneAndUpdate(
                 { _id: eventId, availableSeats: { $gt: 0 } },
                 { $inc: { availableSeats: -1 } },
-                { new: true }
+                { returnDocument: 'after' }
             );
             if (!updated) return res.status(400).json({ message: 'No seats available' });
 
@@ -176,7 +176,7 @@ exports.verifyPayment = async (req, res) => {
         const seatUpdate = await Event.findOneAndUpdate(
             { _id: booking.eventId._id, availableSeats: { $gt: 0 } },
             { $inc: { availableSeats: -1 } },
-            { new: true }
+            { returnDocument: 'after' }
         );
 
         if (!seatUpdate) {
@@ -222,7 +222,7 @@ exports.confirmBooking = async (req, res) => {
         const updated = await Event.findOneAndUpdate(
             { _id: booking.eventId._id, availableSeats: { $gt: 0 } },
             { $inc: { availableSeats: -1 } },
-            { new: true }
+            { returnDocument: 'after' }
         );
         if (!updated) {
             return res.status(400).json({ message: 'No seats available to confirm this booking' });

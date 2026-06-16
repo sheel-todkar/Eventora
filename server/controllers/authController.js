@@ -80,7 +80,7 @@ exports.verifyOTP = async (req, res) => {
             return res.status(400).json({ message: 'Invalid or expired OTP' });
         }
 
-        const user = await User.findOneAndUpdate({ email }, { isVerified: true }, { new: true });
+        const user = await User.findOneAndUpdate({ email }, { isVerified: true }, { returnDocument: 'after' });
         await OTP.deleteOne({ _id: validOTP._id }); // Delete OTP after usage
 
         res.json({
