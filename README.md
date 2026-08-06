@@ -59,12 +59,14 @@ The application implements a complete user lifecycle: email-based registration w
 - **Event CRUD** — Create, update, and delete events with image support and category tagging
 - **Booking Management** — View all bookings across users, confirm pending bookings, track payment statuses
 
-### Security & Reliability
+### Performance & Security
+- **Redis Caching Layer** — Cache-aside implementation (listings 60s, details 120s, stats 30s) with active cache invalidation on write events and SCAN-based non-blocking pattern deletions
+- **Graceful Cache Degradation** — Application runs seamlessly even if the Redis server goes offline by falling back to MongoDB directly
 - **Rate Limiting** — Global (100 req/15min), auth-specific (15 req/15min), and OTP-specific (5 req/15min) limits
 - **Input Validation** — Server-side validation on every endpoint using `express-validator`
 - **Atomic Seat Management** — MongoDB `$inc` with conditional `$gt: 0` queries to prevent overbooking under concurrency
 - **CORS Configuration** — Dynamic origin validation supporting local development and Vercel preview deployments
-- **Graceful Shutdown** — SIGINT/SIGTERM handlers for clean MongoDB connection teardown
+- **Graceful Shutdown** — SIGINT/SIGTERM handlers for clean MongoDB and Redis connection teardown
 
 ---
 
@@ -77,57 +79,66 @@ The application implements a complete user lifecycle: email-based registration w
 | **HTTP Client** | Axios | API communication with JWT interceptor |
 | **Backend** | Node.js, Express 5 | REST API server |
 | **Database** | MongoDB (Mongoose 9) | Document store with schema validation |
+| **Caching** | Redis (Node-Redis v4) | Cache-aside database query performance optimizer |
 | **Authentication** | JWT (jsonwebtoken), bcryptjs | Token-based auth with password hashing |
 | **Payments** | Razorpay | Payment gateway with server-side signature verification |
 | **Email** | Nodemailer (Gmail SMTP) | OTP delivery and booking confirmations |
 | **Validation** | express-validator | Request body/param sanitization and validation |
 | **Rate Limiting** | express-rate-limit | Brute-force protection |
+| **Containerization** | Docker, Docker Compose | Consistent multi-container environments |
+| **Web Server** | Nginx | Reverse proxy, static asset serving, compression, and request routing |
 | **Frontend Hosting** | Vercel | CDN-backed SPA hosting |
-| **Backend Hosting** | Render | Node.js server hosting |
+| **Backend Hosting** | Render / AWS EC2 | Production Node.js server hosting |
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   Client (React SPA)                │
-│  Vercel CDN — Vite build → static HTML/JS/CSS       │
-│                                                     │
-│  AuthContext ──→ localStorage (JWT token)            │
-│  Axios Instance ──→ auto-attaches Bearer token      │
-│  React Router ──→ ProtectedRoute / AdminRoute guards│
-└──────────────────────┬──────────────────────────────┘
-                       │ HTTPS (REST)
-                       ▼
-┌─────────────────────────────────────────────────────┐
-│               Server (Express 5 on Render)          │
-│                                                     │
-│  Middleware Stack:                                   │
-│  ┌─ CORS (dynamic origin whitelist)                 │
-│  ├─ Global Rate Limiter (100 req / 15 min)          │
-│  ├─ JSON body parser (10 MB limit)                  │
-│  └─ Route-specific: auth middleware, validation     │
-│                                                     │
-│  Routes:                                            │
-│  /api/auth/*     → authController                   │
-│  /api/events/*   → eventController                  │
-│  /api/bookings/* → bookingController                │
-│  /api/health     → DB ping health check             │
-│                                                     │
-│  Razorpay SDK ──→ Order creation + HMAC signature   │
-│  Nodemailer   ──→ Gmail SMTP (OTP + confirmations)  │
-└──────────────────────┬──────────────────────────────┘
-                       │ Mongoose (connection pool: 10)
-                       ▼
-┌─────────────────────────────────────────────────────┐
-│              MongoDB Atlas                          │
-│                                                     │
-│  Collections: users, events, bookings, otps         │
-│  Indexes: compound (category+date), text search     │
-│           (title+description), status+date          │
-│  TTL Index: OTP documents auto-expire in 5 minutes  │
-└─────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│                          Client (React SPA)                            │
+│           Vercel CDN — Vite build → static HTML/JS/CSS                 │
+│                                                                        │
+│  AuthContext ──→ localStorage (JWT token)                              │
+│  Axios Instance ──→ auto-attaches Bearer token                        │
+│  React Router ──→ ProtectedRoute / AdminRoute guards                   │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │ HTTPS (REST)
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                        Nginx Reverse Proxy                             │
+│       Listens on Port 80, serves React build, routes /api/* requests    │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                     Server (Express 5 on Render/EC2)                   │
+│                                                                        │
+│  Middleware Stack:                                                     │
+│  ┌─ CORS (dynamic origin whitelist)                                    │
+│  ├─ Global Rate Limiter (100 req / 15 min)                             │
+│  ├─ JSON body parser (10 MB limit)                                     │
+│  └─ Route-specific: auth middleware, validation                        │
+│                                                                        │
+│  Routes:                                                               │
+│  /api/auth/*     → authController                                      │
+│  /api/events/*   → eventController                                     │
+│  /api/bookings/* → bookingController                                   │
+│  /api/health     → DB ping health check                                │
+│                                                                        │
+│  Razorpay SDK ──→ Order creation + HMAC signature                      │
+│  Nodemailer   ──→ Gmail SMTP (OTP + confirmations)                     │
+└──────────────────┬───────────────────────────────┬─────────────────────┘
+                   │ Cache-Aside                   │ Mongoose (Pool: 10)
+                   ▼                               ▼
+┌──────────────────────────────────────┐ ┌──────────────────────────────┐
+│            Redis Cache               │ │        MongoDB Atlas         │
+│                                      │ │                              │
+│  - Events list cache (TTL 60s)       │ │  Collections: users, events, │
+│  - Single event cache (TTL 120s)     │ │               bookings, otps │
+│  - Admin stats cache (TTL 30s)       │ │  TTL Index: OTP auto-expiry  │
+│  - Non-blocking SCAN-based clear     │ │  Compound & Text indexes     │
+└──────────────────────────────────────┘ └──────────────────────────────┘
 ```
 
 ---
@@ -328,6 +339,7 @@ Register → Booking created (status: pending) → Pay Now → Razorpay Checkout
 ### Prerequisites
 - **Node.js** ≥ 18
 - **MongoDB** (local instance or [MongoDB Atlas](https://www.mongodb.com/atlas) free tier)
+- **Redis** (local instance or running container for caching; optional, system degrades gracefully if absent)
 - **Gmail App Password** for email functionality ([how to generate](https://support.google.com/accounts/answer/185833))
 - **Razorpay Test Keys** for payment testing ([get test keys](https://dashboard.razorpay.com/))
 
@@ -343,6 +355,9 @@ npm run setup
 
 # Configure environment variables (see section below)
 cp .env.example server/.env
+
+# Start your local Redis server (if installed, e.g., via redis-server)
+# (Alternatively, run without Redis URL and the cache-aside layer will bypass automatically)
 
 # Seed sample events (optional)
 cd server && node seed.js && cd ..
@@ -371,10 +386,11 @@ The client runs on `http://localhost:5173` and the server on `http://localhost:5
 Create a `server/.env` file based on `.env.example`:
 
 ```env
-# Server
+# Server Configuration
 PORT=5000
 MONGO_URI=mongodb+srv://<username>:<password>@<cluster>.mongodb.net/eventora
 JWT_SECRET=your_jwt_secret_key
+JWT_EXPIRES_IN=7d
 
 # Email (Gmail SMTP)
 EMAIL_USER=your_gmail@gmail.com
@@ -383,9 +399,15 @@ EMAIL_PASS=your_gmail_app_password
 # Razorpay (use test keys for development)
 RAZORPAY_KEY_ID=rzp_test_xxxxxxxxxxxxx
 RAZORPAY_KEY_SECRET=your_razorpay_key_secret
+
+# Redis Caching (leave blank to run in non-cached database-only mode)
+REDIS_URL=redis://localhost:6379
+
+# CORS Whitelist Origin
+CLIENT_URL=http://localhost:5173
 ```
 
-The client uses `VITE_API_URL` (set in `client/.env` or defaults to localhost in development).
+The client uses `VITE_API_URL` (set in `client/.env` or defaults to `/api` / localhost proxy in development).
 
 ---
 
@@ -423,7 +445,7 @@ eventora/
 ├── server/                           # Express backend
 │   ├── controllers/
 │   │   ├── authController.js         # Register, login, OTP, forgot/reset password
-│   │   ├── eventController.js        # CRUD operations for events
+│   │   ├── eventController.js        # CRUD operations for events (caching integrated)
 │   │   └── bookingController.js      # Registration, payment, cancellation, admin stats
 │   ├── models/
 │   │   ├── User.js                   # User schema (name, email, password, role, isVerified)
@@ -439,12 +461,18 @@ eventora/
 │   │   ├── events.js                 # Event routes with admin protection
 │   │   └── bookings.js               # Booking routes with mixed auth levels
 │   ├── utils/
-│   │   └── email.js                  # Nodemailer: OTP + booking confirmation emails
+│   │   ├── email.js                  # Nodemailer: OTP + booking confirmation emails
+│   │   └── redis.js                  # Redis client with graceful failure handling
 │   ├── seed.js                       # Database seeder for sample events
-│   └── index.js                      # Express app setup, DB connection, graceful shutdown
+│   └── index.js                      # Express app setup, DB/Redis, graceful shutdown
 │
+├── .dockerignore                     # Docker build exclusions
 ├── .env.example                      # Environment variable template
 ├── .gitignore
+├── Dockerfile                        # Multi-stage production build config
+├── docker-compose.yml                # Express, Redis, and Nginx orchestrator
+├── nginx.conf                        # Reverse proxy, static serving, and routing configuration
+├── deploy.sh                         # Automation script for SSH-based remote EC2 setup
 ├── package.json                      # Root-level monorepo scripts (concurrently)
 ├── Eventora_Postman_Collection.json  # Importable Postman collection for API testing
 └── README.md
@@ -458,17 +486,32 @@ eventora/
 1. Connect the GitHub repo to [Vercel](https://vercel.com)
 2. Set root directory to `client`
 3. Framework preset: **Vite**
-4. Add environment variable: `VITE_API_URL=https://your-backend-url.onrender.com/api`
+4. Add environment variable: `VITE_API_URL=https://your-backend-url.onrender.com/api` (or your EC2 public IP/domain)
 5. The included `vercel.json` handles SPA routing rewrites
 
-### Backend → Render
+### Backend Option A → Render (Web Service)
 1. Create a new **Web Service** on [Render](https://render.com)
 2. Set root directory to `server`
 3. Build command: `npm install`
 4. Start command: `node index.js`
-5. Add all environment variables from `.env.example`
+5. Add all environment variables from `.env.example` (Exclude `REDIS_URL` if you want to bypass caching and run database-only)
 
-> **Note:** Render's free tier has a cold start delay of ~30 seconds on the first request after inactivity. The health check endpoint (`/api/health`) can be used with an uptime monitor to keep the service warm.
+> **Note:** Render's free tier has a cold start delay of ~30 seconds on the first request after inactivity.
+
+### Backend Option B → AWS EC2 (Multi-Container Docker Production)
+For production-grade scalability, the root folder contains a multi-container Docker deployment configuration:
+- **Express Backend Container** (running on port 5000)
+- **Redis Cache Container** (LRU eviction policy, locked internally)
+- **Nginx Reverse Proxy Container** (Serving built static frontend files, proxying `/api/*` to Express, handling gzip, caching assets for 30 days)
+
+To deploy on a standard AWS EC2 Ubuntu instance:
+```bash
+# Make the deployment automation script executable
+chmod +x deploy.sh
+
+# Run the deployment script (it installs Docker/Docker Compose, prompts for env secrets, and starts the container stack)
+./deploy.sh
+```
 
 ---
 
@@ -491,6 +534,10 @@ eventora/
 |----------|-----------|
 | **Atomic `$inc` for seats** | Using `findOneAndUpdate` with `$gt: 0` guard prevents race conditions and overbooking without needing transactions |
 | **Separate register + pay-now flow** | Decouples registration intent from payment — users can register first and pay later, reducing drop-off |
+| **Redis Cache-Aside Pattern** | Improves read latency ($<10$ms on hits) for read-heavy operations. Automatically invalidates affected caches on write mutations |
+| **SCAN over KEYS in Redis** | Deleting keys matching `events:*` uses cursor-based `SCAN` rather than blocking `KEYS`, preserving single-threaded performance |
+| **Graceful Cache Degradation** | If Redis goes offline, the connection wrapper catches the fault and redirects calls directly to MongoDB, maintaining application uptime |
+| **Docker Compose + Nginx orchestration** | Packages Node, Redis, and Nginx in a consistent, self-contained network. Nginx offloads static serving and SSL/API proxying from Node |
 | **Role hardcoded on registration** | Prevents privilege escalation by ignoring any `role` field sent from the client |
 | **OTP over email links** | Simpler to implement, no need for additional URL token management, works well for mobile users |
 | **No frontend CSS framework** | Vanilla CSS with custom properties for full control over the design system without bundle overhead |
